@@ -73,7 +73,7 @@ main:
     or      $t4     $t4     TIMER_INT_MASK
     or      $t4,    $t4,    BONK_INT_MASK             # enable bonk interrupt
     or      $t4,    $t4,    REQUEST_PUZZLE_INT_MASK   # enable puzzle interrupt
-    or      $t4,    $t4,    BUNNY_MOVE_INT_MASK
+    or      $t4,    $t4,    BUNNY_MOVE_INT_MASK 
     or      $t4,    $t4,    PLAYPEN_UNLOCK_INT_MASK
     or      $t4,    $t4,    1 # global enable
     mtc0    $t4     $12
@@ -90,7 +90,7 @@ main:
     sw $ra, 0($sp)
     sw $s0, 4($sp)          # puzzle_num
     sw $s1, 8($sp)          # flag
-    sw $s2, 12($sp)
+    sw $s2, 12($sp)         # iteration counter
     sw $s3, 16($sp)
     sw $s4, 20($sp)
 
@@ -104,13 +104,29 @@ main:
     
     # Initialize Flag
     li $s1, 0
+    # Start Counter at 0
+    li $s2, 0
+
 # Check if there was an unlock pen interrupt, if there was go lock the playpen before catching a bunny
 check_unlocked:
+    addi $s2, $s2, 1
+    # if counter is at 5, go and unlock the opponents playpen
+    li $t0, 15
+    blt $s2, $t0, skip_unlock_opponent
+
+    # set unlock flag
+    li $s1, 3
+    # load opponent playpen location
+    lw $t4, PLAYPEN_OTHER_LOCATION($0)
+    srl $t2, $t4, 16
+    andi $t3, $t4, 0xFFFF
+    j while_x
+
+
+skip_unlock_opponent:
     # Check interrupt true
     lb $t0, playpen_unlocked
-    beq $t0, 0 puzzle_solver
-
-
+    beq $t0, 0, puzzle_solver
     # Store playpen loc
     lw $t4, PLAYPEN_LOCATION($0)
     srl $t2, $t4, 16
@@ -128,7 +144,12 @@ lock_playpen:
     lw $t6, NUM_BUNNIES_CARRIED($0)
     sw $t6, PUT_BUNNIES_IN_PLAYPEN($0)
     li $s1, 0
+    j puzzle_solver
 
+unlock_playpen:
+    sw $0, UNLOCK_PLAYPEN($0)
+    li $s1, 0
+    li $s2, 0
 puzzle_solver:
 # Check if we have carrots, if we don't acknowledge a puzzle interrupt and solve the puzzle
     lw $t0, NUM_CARROTS($0)
@@ -168,12 +189,13 @@ bunny_found:
     # Load bunny weight -> $t4
     lw $t2, 0($t1)
     lw $t3, 4($t1)
+
+    # Move SPIMbot #
+while_x:
     li $t4, 0
     sw $t4, ANGLE($0)
     li $t4, 1
     sw $t4, ANGLE_CONTROL($0)
-    # Move SPIMbot #
-while_x:
     lw $t4, BOT_X($0)
     beq $t4, $t2, end_while_x
 
@@ -223,7 +245,9 @@ move_down:
     j while_y
 end_while_y:
     sw $0, VELOCITY($0)
-    bne $s1, $0, drop_bunny
+    beq $s1, 1, drop_bunny
+    beq $s1, 2, lock_playpen
+    beq $s1, 3, unlock_playpen
     sw $0, CATCH_BUNNY($0)
     lw $t4, NUM_BUNNIES_CARRIED($0)
     li $t5, 3
@@ -243,7 +267,6 @@ end_while_y:
     sw $t4, ANGLE_CONTROL
     j while_x
 drop_bunny:
-    bne $s1, 1, lock_playpen
     lw $t6, NUM_BUNNIES_CARRIED($0)
     sw $t6, PUT_BUNNIES_IN_PLAYPEN($0)
     li $s1, 0
