@@ -48,29 +48,219 @@ MMIO_STATUS             = 0xffff204c
 has_bonked: .byte 0
 .align 2 # to make sure that the next item starts at address div by 4 (may want to add this in other places)
 
+## Allocated all data necessary
+puzzle: .space 268
+solution: .space 256
+puzzle_received: .byte 0
+bunny_moved: .byte 0
+.align 2
+num_puzzles_requested: .word 0
+.align 2
+bunnies_info: .space 484
+
 .text
 main:
-        # enable interrupts
-        li      $t4     1
-        or      $t4     $t4     TIMER_INT_MASK
-        or      $t4,    $t4,    BONK_INT_MASK             # enable bonk interrupt
-        or      $t4,    $t4,    REQUEST_PUZZLE_INT_MASK   # enable puzzle interrupt
-        or      $t4,    $t4,    1 # global enable
-        mtc0    $t4     $12
+    # enable interrupts
+    li      $t4     1
+    or      $t4     $t4     TIMER_INT_MASK
+    or      $t4,    $t4,    BONK_INT_MASK             # enable bonk interrupt
+    or      $t4,    $t4,    REQUEST_PUZZLE_INT_MASK   # enable puzzle interrupt
+    or      $t4,    $t4,    BUNNY_MOVE_INT_MASK
+    or      $t4,    $t4,    1 # global enable
+    mtc0    $t4     $12
 
-        li $t1, 0
-        sw $t1, ANGLE
-        li $t1, 1
-        sw $t1, ANGLE_CONTROL
-        li $t2, 0
-        sw $t2, VELOCITY
+    li $t1, 0
+    sw $t1, ANGLE
+    li $t1, 1
+    sw $t1, ANGLE_CONTROL
+    li $t2, 0
+    sw $t2, VELOCITY
 
-        # YOUR CODE GOES HERE!!!!!!
+    # YOUR CODE GOES HERE!!!!!!
+    sub $sp, $sp, 24
+    sw $ra, 0($sp)
+    sw $s0, 4($sp)          # puzzle_num
+    sw $s1, 8($sp)
+    sw $s2, 12($sp)
+    sw $s3, 16($sp)
+    sw $s4, 20($sp)
 
+    # int puzzle_num = request_puzzle();
+    jal request_puzzle
+    move $s0, $v0
+    move $a0, $s0
+    jal solve_puzzle
+
+        # Part 1 Code
+    #### Load Address of bunnies_info memory into a register
+    la $t0, bunnies_info
+    #### Write address to SEARCH BUNNIES memory I/O
+    sw $t0, SEARCH_BUNNIES($0)
+    addi $t1, $t0, 4
+
+catch_bunnies:
+    lb $t2, bunny_moved
+    beq $t2, $0, find_good_bunny
+    la $t0, bunnies_info
+    #### Write address to SEARCH BUNNIES memory I/O
+    sw $t0, SEARCH_BUNNIES($0)
+    addi $t1, $t0, 4
+    sb $0, bunny_moved
+    # While the bunny at address t1 is going to hop within 100,000 cycles, add 16
+find_good_bunny:
+    lw $t2, 12($t1)         # Stores cycles until next hop
+    li $t3, 100000
+    bgt $t2, $t3, bunny_found
+    addi $t1, $t1, 16
+    j find_good_bunny
+bunny_found:
+
+    # Load bunny x-coord -> $t2
+    # Load bunny y-coord -> $t3
+    # Load bunny weight -> $t4
+    lw $t2, 0($t1)
+    lw $t3, 4($t1)
+    li $t4, 0
+    sw $t4, ANGLE
+    li $t4, 1
+    sw $t4, ANGLE_CONTROL
+    # Move SPIMbot #
+while_x:
+    lw $t4, BOT_X($0)
+    beq $t4, $t2, end_while_x
+
+    # absolute distance
+    sub $t5, $t4, $t2
+    bge $t5, $0, endabs
+    sub $t5, $0, $t5
+endabs:
+    li $t6, 10
+    ble $t5, $t6, end_max_vel
+    li $t5, 10
+end_max_vel:
+    bgt $t2, $t4, move_right
+    
+move_left:
+    sub $t5, $0, $t5
+    sw $t5, VELOCITY($0)
+    j while_x
+move_right:
+    sw $t5, VELOCITY($0)
+    j while_x
+end_while_x:
+    sw $0, VELOCITY($0)
+    li $t4, 90
+    sw $t4, ANGLE
+    li $t4, 1
+    sw $t4, ANGLE_CONTROL
+while_y:
+    lw $t4, BOT_Y($0)
+    beq $t4, $t3, end_while_y
+    # absolute distance
+    sub $t5, $t4, $t3
+    bge $t5, $0, endabs2
+    sub $t5, $0, $t5
+endabs2:
+    li $t6, 10
+    ble $t5, $t6, end_max_vel2
+    li $t5, 10
+end_max_vel2:
+    bgt $t3, $t4, move_down
+move_up:
+    sub $t5, $0, $t5
+    sw $t5, VELOCITY($0)
+    j while_y
+move_down:
+    sw $t5, VELOCITY($0)
+    j while_y
+end_while_y:
+    sw $0, VELOCITY($0)
+    bne $t7, $0, drop_bunny
+    sw $0, CATCH_BUNNY($0)
+    lw $t4, NUM_BUNNIES_CARRIED
+    li $t5, 3
+    blt $t4, $t5, skip_drop
+# Drop off Bunny at playpen
+    # Playpen x-loc -> $t2
+    # Playpen y-loc -> $t3
+    lw $t4, PLAYPEN_LOCATION($0)
+    srl $t2, $t4, 16
+    andi $t3, $t4, 0xFFFF
+    # Flag that we are dropping off a bunny
+    li $t7, 1
+
+    li $t4, 0
+    sw $t4, ANGLE
+    li $t4, 1
+    sw $t4, ANGLE_CONTROL
+    j while_x
+drop_bunny:
+    lw $t6, NUM_BUNNIES_CARRIED($0)
+    sw $t6, PUT_BUNNIES_IN_PLAYPEN($0)
+    li $t7, 0
+skip_drop:
+    addi $t1, $t1, 16
+    j catch_bunnies
 
 # Once done, enter an infinite loop so that your bot can be graded by QtSpimbot once 10,000,000 cycles have elapsed
 loop:
         j       loop
+
+request_puzzle:
+    sb $0, puzzle_received
+    la $t3, puzzle
+    sw $t3, REQUEST_PUZZLE
+
+    lw $v0, num_puzzles_requested
+    lw $t3, num_puzzles_requested
+    addi $t3, $t3, 1
+    sw $t3, num_puzzles_requested
+while:
+    lb $t4, puzzle_received
+    bne $t4, $0, endwhile
+    j while
+endwhile:
+    jr $ra
+
+solve_puzzle:
+    sub $sp, $sp, 12
+    sw $ra, 0($sp)
+    sw $s0, 4($sp)          # a0
+    sw $s1, 8($sp)          # got_sol
+    move $s0, $a0
+    # zero_board(puzzle.num_rows, puzzle.num_cols, &solution);
+    la $t3, puzzle
+    lw $a0, 0($t3)          #num_rows
+    lw $a1, 4($t3)          #num_cols
+    la $a2, solution
+    jal zero_board
+
+    # bool got_sol = solve(&puzzle, &solution, 0, 0);
+    la $a0, puzzle
+    la $a1, solution
+    li $a2, 0
+    li $a3, 0
+    jal solve
+    move $s1, $v0           # Store boolean
+
+    sw $s0, CURRENT_PUZZLE
+    la $t3, solution
+    sw $t3, SUBMIT_SOLUTION
+
+    # Check if Correct
+    li $t3, 0
+    lw $t4, MMIO_STATUS
+    bne $t4, $0, correct_done
+    li $t3, 1
+correct_done:
+    and $v0, $s1, $t3
+
+    lw $ra, 0($sp)
+    lw $s0, 4($sp)
+    lw $s1, 8($sp)
+    add $sp, $sp, 12
+
+    jr $ra
 
 # ======================== kernel code ================================
 .kdata
@@ -120,6 +310,9 @@ interrupt_dispatch:                 # Interrupt:
     and     $a0 $k0 REQUEST_PUZZLE_INT_MASK
     bne     $a0 0 request_puzzle_interrupt
 
+    and     $a0, $k0, BUNNY_MOVE_INT_MASK
+    bne     $a0, 0, bunny_move_interrupt
+
     li      $v0, PRINT_STRING       # Unhandled interrupt types
     la      $a0, unhandled_str
     syscall
@@ -138,7 +331,15 @@ timer_interrupt:
 request_puzzle_interrupt:
     sw      $0, REQUEST_PUZZLE_ACK
     #Fill in your request puzzle interrupt code here
+    li      $t1, 1
+    sb      $t1, puzzle_received
     j       interrupt_dispatch      # see if other interrupts are waiting
+
+bunny_move_interrupt:
+    sw      $0, BUNNY_MOVE_ACK
+    li      $t1, 1
+    sb      $t1, bunny_moved
+    j       interrupt_dispatch
 
 non_intrpt:                         # was some non-interrupt
     li      $v0, PRINT_STRING
