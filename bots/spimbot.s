@@ -106,6 +106,29 @@ main:
     sw $t0, SEARCH_BUNNIES($0)
     addi $t1, $t0, 4
 
+# Check if there was an unlock pen interrupt, if there was go lock the playpen before catching a bunny
+check_unlocked:
+    # Check interrupt true
+    lb $t0, playpen_unlocked
+    beq $t0, 0 catch_bunnies
+
+
+    # Store playpen loc
+    lw $t4, PLAYPEN_LOCATION($0)
+    srl $t2, $t4, 16
+    andi $t3, $t4, 0xFFFF
+
+    # add a flag to tell our loop we are locking the playpen
+    li $t7, 2
+    # travel to playpen
+    j while_x
+
+lock_playpen:
+    # when at playpen lock the playpen and drop off any potential bunnies we have
+    sw $0, LOCK_PLAYPEN
+    sw $0, playpen_unlocked
+    li $t7, 0
+    
 catch_bunnies:
     lb $t2, bunny_moved
     beq $t2, $0, find_good_bunny
@@ -203,6 +226,7 @@ end_while_y:
     sw $t4, ANGLE_CONTROL
     j while_x
 drop_bunny:
+    bne $t7, 1, lock_playpen
     lw $t6, NUM_BUNNIES_CARRIED($0)
     sw $t6, PUT_BUNNIES_IN_PLAYPEN($0)
     li $t7, 0
