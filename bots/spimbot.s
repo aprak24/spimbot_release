@@ -74,6 +74,7 @@ main:
     or      $t4,    $t4,    BONK_INT_MASK             # enable bonk interrupt
     or      $t4,    $t4,    REQUEST_PUZZLE_INT_MASK   # enable puzzle interrupt
     or      $t4,    $t4,    BUNNY_MOVE_INT_MASK
+    or      $t4,    $t4,    PLAYPEN_UNLOCK_INT_MASK
     or      $t4,    $t4,    1 # global enable
     mtc0    $t4     $12
 
@@ -88,7 +89,7 @@ main:
     sub $sp, $sp, 24
     sw $ra, 0($sp)
     sw $s0, 4($sp)          # puzzle_num
-    sw $s1, 8($sp)
+    sw $s1, 8($sp)          # flag
     sw $s2, 12($sp)
     sw $s3, 16($sp)
     sw $s4, 20($sp)
@@ -100,17 +101,14 @@ main:
     jal solve_puzzle
 
         # Part 1 Code
-    #### Load Address of bunnies_info memory into a register
-    la $t0, bunnies_info
-    #### Write address to SEARCH BUNNIES memory I/O
-    sw $t0, SEARCH_BUNNIES($0)
-    addi $t1, $t0, 4
-
+    
+    # Initialize Flag
+    li $s1, 0
 # Check if there was an unlock pen interrupt, if there was go lock the playpen before catching a bunny
 check_unlocked:
     # Check interrupt true
     lb $t0, playpen_unlocked
-    beq $t0, 0 catch_bunnies
+    beq $t0, 0 puzzle_solver
 
 
     # Store playpen loc
@@ -119,17 +117,36 @@ check_unlocked:
     andi $t3, $t4, 0xFFFF
 
     # add a flag to tell our loop we are locking the playpen
-    li $t7, 2
+    li $s1, 2
     # travel to playpen
     j while_x
 
 lock_playpen:
     # when at playpen lock the playpen and drop off any potential bunnies we have
-    sw $0, LOCK_PLAYPEN
-    sw $0, playpen_unlocked
-    li $t7, 0
-    
+    sw $0, LOCK_PLAYPEN($0)
+    sb $0, playpen_unlocked
+    lw $t6, NUM_BUNNIES_CARRIED($0)
+    sw $t6, PUT_BUNNIES_IN_PLAYPEN($0)
+    li $s1, 0
+
+puzzle_solver:
+# Check if we have carrots, if we don't acknowledge a puzzle interrupt and solve the puzzle
+    lw $t0, NUM_CARROTS($0)
+    li $t1, 1
+    bgt $t0, $t1, catch_bunnies
+
+    jal request_puzzle
+    move $s0, $v0
+    move $a0, $s0
+    jal solve_puzzle
+
+
 catch_bunnies:
+    #### Load Address of bunnies_info memory into a register
+    la $t0, bunnies_info
+    #### Write address to SEARCH BUNNIES memory I/O
+    sw $t0, SEARCH_BUNNIES($0)
+    addi $t1, $t0, 4
     lb $t2, bunny_moved
     beq $t2, $0, find_good_bunny
     la $t0, bunnies_info
@@ -152,9 +169,9 @@ bunny_found:
     lw $t2, 0($t1)
     lw $t3, 4($t1)
     li $t4, 0
-    sw $t4, ANGLE
+    sw $t4, ANGLE($0)
     li $t4, 1
-    sw $t4, ANGLE_CONTROL
+    sw $t4, ANGLE_CONTROL($0)
     # Move SPIMbot #
 while_x:
     lw $t4, BOT_X($0)
@@ -181,9 +198,9 @@ move_right:
 end_while_x:
     sw $0, VELOCITY($0)
     li $t4, 90
-    sw $t4, ANGLE
+    sw $t4, ANGLE($0)
     li $t4, 1
-    sw $t4, ANGLE_CONTROL
+    sw $t4, ANGLE_CONTROL($0)
 while_y:
     lw $t4, BOT_Y($0)
     beq $t4, $t3, end_while_y
@@ -206,9 +223,9 @@ move_down:
     j while_y
 end_while_y:
     sw $0, VELOCITY($0)
-    bne $t7, $0, drop_bunny
+    bne $s1, $0, drop_bunny
     sw $0, CATCH_BUNNY($0)
-    lw $t4, NUM_BUNNIES_CARRIED
+    lw $t4, NUM_BUNNIES_CARRIED($0)
     li $t5, 3
     blt $t4, $t5, skip_drop
 # Drop off Bunny at playpen
@@ -218,7 +235,7 @@ end_while_y:
     srl $t2, $t4, 16
     andi $t3, $t4, 0xFFFF
     # Flag that we are dropping off a bunny
-    li $t7, 1
+    li $s1, 1
 
     li $t4, 0
     sw $t4, ANGLE
@@ -226,13 +243,13 @@ end_while_y:
     sw $t4, ANGLE_CONTROL
     j while_x
 drop_bunny:
-    bne $t7, 1, lock_playpen
+    bne $s1, 1, lock_playpen
     lw $t6, NUM_BUNNIES_CARRIED($0)
     sw $t6, PUT_BUNNIES_IN_PLAYPEN($0)
-    li $t7, 0
+    li $s1, 0
 skip_drop:
     addi $t1, $t1, 16
-    j catch_bunnies
+    j check_unlocked
 
 # Once done, enter an infinite loop so that your bot can be graded by QtSpimbot once 10,000,000 cycles have elapsed
 loop:
@@ -241,7 +258,7 @@ loop:
 request_puzzle:
     sb $0, puzzle_received
     la $t3, puzzle
-    sw $t3, REQUEST_PUZZLE
+    sw $t3, REQUEST_PUZZLE($0)
 
     lw $v0, num_puzzles_requested
     lw $t3, num_puzzles_requested
@@ -275,14 +292,14 @@ solve_puzzle:
     jal solve
     move $s1, $v0           # Store boolean
 
-    sw $s0, CURRENT_PUZZLE
+    sw $s0, CURRENT_PUZZLE($0)
     la $t3, solution
-    sw $t3, SUBMIT_SOLUTION
+    sw $t3, SUBMIT_SOLUTION($0)
 
     # Check if Correct
     li $t3, 0
-    lw $t4, MMIO_STATUS
-    bne $t4, $0, correct_done
+    lw $t4, MMIO_STATUS($0)
+    beq $t4, $0, correct_done
     li $t3, 1
 correct_done:
     and $v0, $s1, $t3
